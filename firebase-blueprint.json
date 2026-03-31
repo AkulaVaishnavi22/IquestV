@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user information and current progress in the simulation.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique identifier for the user." },
+        "displayName": { "type": "string", "description": "User's display name." },
+        "email": { "type": "string", "description": "User's email address." },
+        "currentStage": { "type": "string", "description": "The current stage ID the user is on." },
+        "lastUpdated": { "type": "string", "format": "date-time", "description": "Timestamp of the last progress update." }
+      },
+      "required": ["uid", "currentStage"]
+    },
+    "Progress": {
+      "title": "Stage Progress",
+      "description": "Tracks detailed performance and feedback for each stage completed by the user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The user's unique ID." },
+        "stageId": { "type": "string", "description": "The ID of the stage." },
+        "score": { "type": "number", "description": "Performance score for the stage." },
+        "feedback": { "type": "string", "description": "Feedback received from the AI investor." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the stage was completed." }
+      },
+      "required": ["uid", "stageId", "timestamp"]
+    },
+    "Proposal": {
+      "title": "Final Proposal",
+      "description": "Stores the final outcome of the startup journey.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The user's unique ID." },
+        "status": { "type": "string", "enum": ["accepted", "rejected", "pending"], "description": "The status of the proposal." },
+        "review": { "type": "string", "description": "Final review and strategic advice." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the final decision was made." }
+      },
+      "required": ["uid", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profile and current progress."
+    },
+    "/progress/{progressId}": {
+      "schema": "Progress",
+      "description": "Historical progress records for each stage."
+    },
+    "/proposals/{uid}": {
+      "schema": "Proposal",
+      "description": "Final proposal outcome for the user."
+    }
+  }
+}

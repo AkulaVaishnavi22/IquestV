@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@import "./styles/fonts.css";
+@import "./styles/theme.css";
+
+@theme {
+  --font-serif: "Instrument Serif", serif;
+  --font-sans: "Inter", sans-serif;
+  
+  --color-background: #FFFFFF;
+  --color-foreground: #000000;
+  --color-muted: #6F6F6F;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+.glass-card {
+  @apply bg-white/10 backdrop-blur-xl border border-black/5 rounded-3xl;
+}

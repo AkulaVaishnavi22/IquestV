@@ -1,0 +1,5 @@
+{
+  "name": "StartupSim AI",
+  "description": "An immersive social innovation simulation where users master the art of starting high-impact ventures through AI-driven scenarios.",
+  "requestFramePermissions": ["camera", "microphone"]
+}

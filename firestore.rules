@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "vaishnaviakula00@gmail.com" && request.auth.token.email_verified == true);
+    }
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'currentStage']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.currentStage is string &&
+             (!('email' in data) || isValidEmail(data.email)) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100));
+    }
+
+    function isValidProgress(data) {
+      return hasRequiredFields(['uid', 'stageId', 'timestamp']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.stageId is string &&
+             data.timestamp is string &&
+             (!('score' in data) || data.score is number) &&
+             (!('feedback' in data) || (data.feedback is string && data.feedback.size() < 5000));
+    }
+
+    function isValidProposal(data) {
+      return hasRequiredFields(['uid', 'status', 'timestamp']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.status in ['accepted', 'rejected', 'pending'] &&
+             data.timestamp is string &&
+             (!('review' in data) || (data.review is string && data.review.size() < 5000));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data);
+    }
+
+    match /progress/{progressId} {
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidProgress(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.uid == request.auth.uid && isValidProgress(request.resource.data);
+    }
+
+    match /proposals/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidProposal(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(userId) && isValidProposal(request.resource.data);
+    }
+  }
+}
