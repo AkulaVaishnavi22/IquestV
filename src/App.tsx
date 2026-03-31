@@ -27,8 +27,7 @@ import {
 } from 'lucide-react';
 import { generateStages, evaluatePitch, evaluateVideoPitch, evaluateMockPitch, evaluatePptPitch } from './services/ai';
 import { GameState, Stage } from './types';
-import { auth, signInWithGoogle, logout, saveUserProgress, saveStageHistory, saveFinalProposal, db } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { saveUserProgress, saveStageHistory, saveFinalProposal, db } from './firebase';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 
 const INITIAL_METRICS = {
@@ -36,9 +35,15 @@ const INITIAL_METRICS = {
   impact: 0
 };
 
+const GUEST_USER = {
+  uid: 'guest',
+  displayName: 'Guest',
+  email: 'guest@localhost',
+  photoURL: ''
+};
+
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState<any>(GUEST_USER);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<'home' | 'map' | 'stage' | 'result' | 'dashboard'>('home');
@@ -50,20 +55,12 @@ export default function App() {
   const [pptFeedback, setPptFeedback] = useState<{ score: number; feedback: string; questions: string[]; isBad?: boolean } | null>(null);
   const [pitchError, setPitchError] = useState<string | null>(null);
   const [proposalStatus, setProposalStatus] = useState<{ status: string; review: string } | null>(null);
+  const [finalPitchFeedback, setFinalPitchFeedback] = useState<{ score: number; feedback: string; questions: string[]; isBad?: boolean } | null>(null);
   const initialLoadRef = useRef(false);
-
-  // Auth Listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
 
   // Load Progress from Firestore
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.uid === 'guest') return;
 
     const userRef = doc(db, 'users', user.uid);
     const unsubscribe = onSnapshot(userRef, (docSnap) => {
@@ -98,10 +95,6 @@ export default function App() {
   }, [user, view]);
 
   const handleStart = async (idea: string, budget: string) => {
-    if (!user) {
-      alert("Please sign in to start your journey!");
-      return;
-    }
     setLoading(true);
     try {
       const stages = await generateStages(idea, budget);
@@ -118,7 +111,7 @@ export default function App() {
         performanceHistory: []
       };
       setGameState(newGameState);
-      await saveUserProgress(user.uid, '1', { gameState: newGameState });
+      if (user.uid !== 'guest') await saveUserProgress(user.uid, '1', { gameState: newGameState });
       setView('map');
     } catch (error) {
       console.error("Failed to start journey:", error);
@@ -128,41 +121,56 @@ export default function App() {
   };
 
   const handleChoice = async (impact: { budget: number; trust: number; impact: number }, feedback: string) => {
-    if (!gameState || !user) return;
-    
+    if (!gameState) return;
+
+    const budgetDelta = Math.round(impact.budget || 0);
+    const trustDelta = Math.round(impact.trust || 0);
+    const impactDelta = Math.round(impact.impact || 0);
+
+    const normalizedTrust = Math.min(100, Math.max(0, gameState.trust + trustDelta));
+    const normalizedBudget = Math.max(0, gameState.budget + budgetDelta);
+    const normalizedImpact = Math.max(0, gameState.impact + impactDelta);
+
+    const performanceScore = Math.max(0, Math.min(100,
+      (Math.abs(budgetDelta) > 0 ? 30 : 0) +
+      (Math.abs(trustDelta) > 0 ? 40 : 0) +
+      (Math.abs(impactDelta) > 0 ? 30 : 0)
+    ));
+
     const updatedState = {
       ...gameState,
-      budget: Math.max(0, gameState.budget + impact.budget),
-      trust: Math.min(100, Math.max(0, gameState.trust + impact.trust)),
-      impact: Math.max(0, gameState.impact + impact.impact),
-      performanceHistory: [...gameState.performanceHistory, (impact.budget > 0 ? 30 : 10) + (impact.trust > 0 ? 40 : 10) + (impact.impact > 0 ? 30 : 10)]
+      budget: normalizedBudget,
+      trust: normalizedTrust,
+      impact: normalizedImpact,
+      stageStatus: 'feedback',
+      performanceHistory: [...gameState.performanceHistory, performanceScore]
     };
-    
+
     setGameState(updatedState);
     setSimulationResult(feedback);
-    await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+    if (user.uid !== 'guest') await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
   };
 
   const handleMockPitchSubmit = async (text: string) => {
-    if (!gameState || !selectedStage || !user) return;
+    if (!gameState || !selectedStage) return;
     setLoading(true);
     try {
       const feedback = await evaluateMockPitch(gameState.idea, selectedStage.name, text);
       setMockPitchFeedback(feedback);
       
-      // Dynamic impact based on score
-      // Score > 70: Significant increase
-      // Score 40-70: Minor increase
-      // Score < 40: Decrease
-      let budgetChange = 0;
-      if (feedback.score > 70) budgetChange = feedback.score * 5000;
-      else if (feedback.score >= 40) budgetChange = feedback.score * 1000;
-      else budgetChange = -(40 - feedback.score) * 2000;
+      // Dynamic impact based on score (smaller credit values)
+      const normalizedScore = Math.max(0, Math.min(100, feedback.score));
+      const budgetChange = normalizedScore > 70 ? normalizedScore * 10 :
+                          normalizedScore >= 40 ? normalizedScore * 5 :
+                          -(40 - normalizedScore) * 5;
+
+      const trustChange = Math.max(-8, Math.min(8, Math.round((normalizedScore - 50) / 6)));
+      const impactChange = Math.max(0, Math.min(5, Math.round(normalizedScore / 20)));
 
       const impact = {
         budget: budgetChange,
-        trust: Math.floor(feedback.score / 2) - 10, // -10 to +40
-        impact: Math.floor(feedback.score / 10)
+        trust: trustChange,
+        impact: impactChange
       };
       
       const updatedState = {
@@ -174,8 +182,10 @@ export default function App() {
       };
       
       setGameState(updatedState);
-      await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
-      await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      if (user.uid !== 'guest') {
+        await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+        await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      }
     } catch (error) {
       console.error("Mock pitch evaluation failed:", error);
     } finally {
@@ -184,7 +194,7 @@ export default function App() {
   };
 
   const handleVideoPitchSubmit = async (videoBase64: string, mimeType: string) => {
-    if (!gameState || !selectedStage || !user) return;
+    if (!gameState || !selectedStage) return;
     setLoading(true);
     setPitchError(null);
     try {
@@ -192,15 +202,18 @@ export default function App() {
       setVideoFeedback(feedback);
       
       // Dynamic impact based on score
-      let budgetChange = 0;
-      if (feedback.score > 70) budgetChange = feedback.score * 8000;
-      else if (feedback.score >= 40) budgetChange = feedback.score * 2000;
-      else budgetChange = -(40 - feedback.score) * 3000;
+      const normalizedScore = Math.max(0, Math.min(100, feedback.score));
+      const budgetChange = normalizedScore > 70 ? normalizedScore * 500 :
+                          normalizedScore >= 40 ? normalizedScore * 200 :
+                          -(40 - normalizedScore) * 150;
+
+      const trustChange = Math.max(-20, Math.min(20, Math.round((normalizedScore - 50) / 3)));
+      const impactChange = Math.max(0, Math.round(normalizedScore / 10));
 
       const impact = {
         budget: budgetChange,
-        trust: Math.floor(feedback.score / 1.5) - 15, // -15 to +51
-        impact: Math.floor(feedback.score / 8)
+        trust: trustChange,
+        impact: impactChange
       };
       
       const updatedState = {
@@ -213,8 +226,10 @@ export default function App() {
       };
       
       setGameState(updatedState);
-      await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
-      await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      if (user.uid !== 'guest') {
+        await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+        await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      }
     } catch (error) {
       console.error("Video pitch evaluation failed:", error);
       setPitchError("Video pitch evaluation failed. Please try again.");
@@ -224,22 +239,25 @@ export default function App() {
   };
 
   const handlePptPitchSubmit = async (text: string) => {
-    if (!gameState || !selectedStage || !user) return;
+    if (!gameState || !selectedStage) return;
     setLoading(true);
     try {
       const feedback = await evaluatePptPitch(gameState.idea, selectedStage.name, text);
       setPptFeedback(feedback);
       
       // Dynamic impact based on score
-      let budgetChange = 0;
-      if (feedback.score > 70) budgetChange = feedback.score * 10000;
-      else if (feedback.score >= 40) budgetChange = feedback.score * 3000;
-      else budgetChange = -(40 - feedback.score) * 4000;
+      const normalizedScore = Math.max(0, Math.min(100, feedback.score));
+      const budgetChange = normalizedScore > 70 ? normalizedScore * 500 :
+                          normalizedScore >= 40 ? normalizedScore * 200 :
+                          -(40 - normalizedScore) * 150;
+
+      const trustChange = Math.max(-20, Math.min(20, Math.round((normalizedScore - 50) / 3)));
+      const impactChange = Math.max(0, Math.round(normalizedScore / 10));
 
       const impact = {
         budget: budgetChange,
-        trust: Math.floor(feedback.score / 1.2) - 20, // -20 to +63
-        impact: Math.floor(feedback.score / 5)
+        trust: trustChange,
+        impact: impactChange
       };
       
       const updatedState = {
@@ -252,8 +270,10 @@ export default function App() {
       };
       
       setGameState(updatedState);
-      await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
-      await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      if (user.uid !== 'guest') {
+        await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+        await saveStageHistory(user.uid, selectedStage.name, feedback.score, feedback.feedback);
+      }
     } catch (error) {
       console.error("PPT pitch evaluation failed:", error);
     } finally {
@@ -262,7 +282,7 @@ export default function App() {
   };
 
   const handleStartSimulation = async () => {
-    if (!gameState || !selectedStage || !user) return;
+    if (!gameState || !selectedStage) return;
     
     const cost = selectedStage.simulationCost || 0;
     if (gameState.budget < cost) {
@@ -276,11 +296,11 @@ export default function App() {
       stageStatus: 'simulation' as const 
     };
     setGameState(updatedState);
-    await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+    if (user.uid !== 'guest') await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
   };
 
   const handleRetryStage = async (type: 'video' | 'mock' | 'ppt') => {
-    if (!gameState || !selectedStage || !user) return;
+    if (!gameState || !selectedStage) return;
     
     const cost = selectedStage.simulationCost || 0;
     if (gameState.budget < cost) {
@@ -304,17 +324,17 @@ export default function App() {
     }
 
     setGameState(updatedState);
-    await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+    if (user.uid !== 'guest') await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
   };
 
   const nextStage = async () => {
-    if (!gameState || !user) return;
+    if (!gameState) return;
     const isLastStage = gameState.currentStage === gameState.stages.length;
     
     if (isLastStage && gameState.stageStatus === 'feedback') {
       const updatedState = { ...gameState, stageStatus: 'simulation' as const };
       setGameState(updatedState);
-      await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
+      if (user.uid !== 'guest') await saveUserProgress(user.uid, String(gameState.currentStage), { gameState: updatedState });
       setView('stage');
     } else {
       const updatedState = { 
@@ -328,21 +348,22 @@ export default function App() {
       setVideoFeedback(null);
       setPptFeedback(null);
       setPitchText('');
-      await saveUserProgress(user.uid, String(updatedState.currentStage), { gameState: updatedState });
+      if (user.uid !== 'guest') await saveUserProgress(user.uid, String(updatedState.currentStage), { gameState: updatedState });
       setView('map');
     }
   };
 
   const handlePitchSubmit = async () => {
-    if (!gameState || !user) return;
+    if (!gameState) return;
     setLoading(true);
     try {
       const feedback = await evaluatePitch(gameState.idea, pitchText);
       const isAccepted = feedback.score >= 70;
       const status = isAccepted ? 'accepted' : 'rejected';
-      
-      setGameState(prev => prev ? { ...prev, pitchFeedback: feedback, isGameOver: true } : null);
-      await saveFinalProposal(user.uid, status as any, feedback.feedback);
+
+      setGameState(prev => prev ? { ...prev, isGameOver: true } : null);
+      setFinalPitchFeedback(feedback);
+      if (user.uid !== 'guest') await saveFinalProposal(user.uid, status as any, feedback.feedback);
       setView('result');
     } catch (error) {
       console.error("Pitch evaluation failed:", error);
@@ -351,17 +372,10 @@ export default function App() {
     }
   };
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f5f5f0]">
-        <div className="w-12 h-12 border-4 border-black/10 border-t-foreground rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginView onLogin={signInWithGoogle} loading={loading} />;
-  }
+  const handleLogout = () => {
+    setUser(GUEST_USER);
+    setView('home');
+  };
 
   return (
     <div className="min-h-screen bg-white text-foreground selection:bg-foreground selection:text-white font-sans">
@@ -410,7 +424,7 @@ export default function App() {
               <div className="flex items-center gap-3 px-4 py-2 rounded-2xl bg-black/5">
                 <img src={user.photoURL || ''} className="w-6 h-6 rounded-full" alt="User" />
                 <span className="text-xs font-medium hidden sm:inline">{user.displayName?.split(' ')[0]}</span>
-                <button onClick={logout} className="p-1 hover:text-red-500 transition-colors">
+                <button onClick={handleLogout} className="p-1 hover:text-red-500 transition-colors">
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
@@ -466,7 +480,7 @@ export default function App() {
             <HomeView onStart={handleStart} loading={loading} />
           )}
 
-          {view === 'dashboard' && user && (
+          {view === 'dashboard' && (
             <DashboardView 
               user={user} 
               gameState={gameState} 
@@ -600,8 +614,8 @@ export default function App() {
             </>
           )}
 
-          {view === 'result' && gameState?.pitchFeedback && (
-            <ResultView feedback={gameState.pitchFeedback} onRestart={() => window.location.reload()} />
+          {view === 'result' && finalPitchFeedback && (
+            <ResultView feedback={finalPitchFeedback} onRestart={() => window.location.reload()} />
           )}
         </AnimatePresence>
       </main>
@@ -1687,7 +1701,7 @@ function LoginView({ onLogin, loading }: { onLogin: () => void, loading: boolean
 }
 
 function DashboardView({ user, gameState, proposalStatus, onBack }: { 
-  user: User, 
+  user: any, 
   gameState: GameState | null, 
   proposalStatus: { status: string, review: string } | null,
   onBack: () => void 
